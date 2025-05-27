@@ -57,10 +57,10 @@ type-B believes that not everything needs to be saved forever. Sometimes you jus
 
 Want type-B always one click away? Install it as a standalone app:
 
-**Chrome/Edge**: Click the install icon in the address bar → Install
-**Safari**: File → Add to Dock
-**Firefox**: Limited support, varies by version
-**Mobile**: Tap share → Add to Home Screen
+Chrome/Edge: Click the install icon in the address bar → Install
+Safari: File → Add to Dock
+Firefox: Limited support, varies by version
+Mobile: Tap share → Add to Home Screen
 
 Once installed, type-B launches without browser chrome - just you and the void.
 
