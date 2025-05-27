@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { FileText, AlertTriangle, Settings } from 'lucide-react';
+import { FileText, AlertTriangle, Settings, Lock } from 'lucide-react';
 import ControlPanel from '@/components/ControlPanel';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
@@ -37,11 +37,13 @@ export default function Index() {
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [showControlPanel, setShowControlPanel] = useState(false);
   const [showGearPulse, setShowGearPulse] = useState(true);
+  const [cursorCoords, setCursorCoords] = useState({ x: 0, y: 0 });
+  const [isCapsLockOn, setIsCapsLockOn] = useState(false);
   const [settings, setSettings] = useState<EditorSettings>({
     fontSize: 16,
     isDarkMode: true,
     showWordCount: true,
-    showCountDisplay: true,
+    showCountDisplay: false, // Changed to false by default
     currentFilename: 'document.txt',
     leftMargin: 72,
     rightMargin: 72
@@ -67,12 +69,11 @@ export default function Index() {
     
     if (savedSettings) {
       const parsed = JSON.parse(savedSettings);
-      // Ensure margins exist in saved settings, use defaults if not
       setSettings({
         fontSize: 16,
         isDarkMode: true,
         showWordCount: true,
-        showCountDisplay: true,
+        showCountDisplay: false, // Changed to false by default
         currentFilename: 'document.txt',
         leftMargin: 72,
         rightMargin: 72,
@@ -80,7 +81,6 @@ export default function Index() {
       });
     }
 
-    // Hide gear pulse after 5 seconds
     const timer = setTimeout(() => setShowGearPulse(false), 5000);
     return () => clearTimeout(timer);
   }, []);
@@ -163,6 +163,82 @@ export default function Index() {
     return () => clearInterval(timer);
   }, [showWelcome]);
 
+  // Enhanced cursor positioning that handles state synchronization issues
+  const updateCursorPosition = useCallback((forceUseTextarea = false) => {
+    if (!textareaRef.current) return;
+    
+    const textarea = textareaRef.current;
+    
+    // Use textarea's actual values if forced or if there's a mismatch
+    const shouldUseTextarea = forceUseTextarea || 
+      (textarea.value.length !== content.length) || 
+      (textarea.selectionStart !== cursorPosition);
+    
+    const actualContent = shouldUseTextarea ? textarea.value : content;
+    const actualCursorPosition = shouldUseTextarea ? textarea.selectionStart : cursorPosition;
+    
+    try {
+      // Get text before cursor using actual values
+      const textBeforeCursor = actualContent.substring(0, actualCursorPosition);
+      
+      // Create a temporary div that matches the textarea exactly
+      const measureDiv = document.createElement('div');
+      const textareaStyles = window.getComputedStyle(textarea);
+      
+      // Copy all relevant styles
+      measureDiv.style.position = 'absolute';
+      measureDiv.style.visibility = 'hidden';
+      measureDiv.style.whiteSpace = 'pre-wrap';
+      measureDiv.style.wordWrap = 'break-word';
+      measureDiv.style.fontSize = textareaStyles.fontSize;
+      measureDiv.style.fontFamily = textareaStyles.fontFamily;
+      measureDiv.style.lineHeight = textareaStyles.lineHeight;
+      measureDiv.style.width = textareaStyles.width;
+      measureDiv.style.padding = textareaStyles.padding;
+      measureDiv.style.border = textareaStyles.border;
+      measureDiv.style.boxSizing = textareaStyles.boxSizing;
+      measureDiv.style.overflow = 'hidden';
+      
+      document.body.appendChild(measureDiv);
+      
+      // Set the content up to cursor position
+      measureDiv.textContent = textBeforeCursor;
+      
+      // Add a marker span at the cursor position
+      const cursorMarker = document.createElement('span');
+      cursorMarker.textContent = '|';
+      cursorMarker.style.position = 'relative';
+      measureDiv.appendChild(cursorMarker);
+      
+      // Get the position of the cursor marker
+      const markerRect = cursorMarker.getBoundingClientRect();
+      const divRect = measureDiv.getBoundingClientRect();
+      
+      // Calculate relative position
+      const x = markerRect.left - divRect.left;
+      const y = markerRect.top - divRect.top - textarea.scrollTop;
+      
+      // Clean up
+      document.body.removeChild(measureDiv);
+      
+      setCursorCoords({ x, y });
+      
+    } catch (error) {
+      console.error('Error updating cursor position:', error);
+      // Fallback to simple calculation using actual values
+      const lines = actualContent.substring(0, actualCursorPosition).split('\n');
+      const currentLine = lines[lines.length - 1];
+      const x = currentLine.length * (settings.fontSize * 0.6);
+      const y = (lines.length - 1) * (settings.fontSize * 1.5) - textarea.scrollTop;
+      setCursorCoords({ x, y });
+    }
+  }, [content, cursorPosition, settings.fontSize]);
+
+  // Update cursor position when content or position changes
+  useEffect(() => {
+    updateCursorPosition();
+  }, [updateCursorPosition]);
+
   // Handle user input
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     if (showWelcome) {
@@ -181,8 +257,33 @@ export default function Index() {
     }
   };
 
-  // Handle tab key for proper indentation
+  // Fixed paste handler that forces textarea values
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Use requestAnimationFrame to ensure the paste operation is complete
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        const newContent = textareaRef.current.value;
+        const newCursorPos = textareaRef.current.selectionStart;
+        
+        // Update React state to match textarea
+        setContent(newContent);
+        setCursorPosition(newCursorPos);
+        
+        // Force cursor position update using textarea values immediately
+        updateCursorPosition(true); // Force use of textarea values
+      }
+    });
+  };
+
+  // Enhanced keyboard handling with hotkeys and Caps Lock detection
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Update Caps Lock state
+    setIsCapsLockOn(e.getModifierState('CapsLock'));
+    
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+    
+    // Handle Tab key
     if (e.key === 'Tab') {
       e.preventDefault();
       const textarea = e.currentTarget;
@@ -192,15 +293,65 @@ export default function Index() {
       const newContent = content.substring(0, start) + '  ' + content.substring(end);
       setContent(newContent);
       
-      // Set cursor position after the inserted spaces
       setTimeout(() => {
         textarea.selectionStart = textarea.selectionEnd = start + 2;
         setCursorPosition(start + 2);
       }, 0);
+      return;
+    }
+    
+    // Handle hotkeys
+    if (cmdOrCtrl) {
+      switch (e.key.toLowerCase()) {
+        case 'n':
+          e.preventDefault();
+          handleNew();
+          break;
+        case 'o':
+          e.preventDefault();
+          handleOpen();
+          break;
+        case 's':
+          e.preventDefault();
+          if (e.shiftKey) {
+            handleSaveAs();
+          } else {
+            autoSave();
+          }
+          break;
+        case 'a':
+          // Allow default select all behavior
+          break;
+        case 'z':
+          // Allow default undo behavior
+          break;
+        case 'y':
+          // Allow default redo behavior (Windows)
+          break;
+        case 'c':
+          // Allow default copy behavior
+          break;
+        case 'v':
+          // Allow default paste behavior
+          break;
+        case 'x':
+          // Allow default cut behavior
+          break;
+        case 'f':
+          // Allow default find behavior
+          break;
+        default:
+          break;
+      }
     }
   };
 
-  // File operations
+  // Handle key up to update Caps Lock state
+  const handleKeyUp = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    setIsCapsLockOn(e.getModifierState('CapsLock'));
+  };
+
+  // ... existing file operation functions remain the same ...
   const handleNew = () => {
     if (!isSaved && content.length > 0) {
       setPendingAction(() => () => {
@@ -311,19 +462,11 @@ export default function Index() {
 
   // Get cursor position for inline count display
   const getCursorLinePosition = () => {
-    if (!textareaRef.current) return { line: 0, column: 0 };
-    
     const textBeforeCursor = content.substring(0, cursorPosition);
     const lines = textBeforeCursor.split('\n');
     const line = lines.length - 1;
     const column = lines[lines.length - 1].length;
-    
     return { line, column };
-  };
-
-  // Check if current file is Markdown
-  const isMarkdownFile = () => {
-    return settings.currentFilename.endsWith('.md');
   };
 
   const { line, column } = getCursorLinePosition();
@@ -362,7 +505,18 @@ export default function Index() {
         <Settings className="w-4 h-4" />
       </Button>
 
-      {/* Control Panel */}
+      {/* Caps Lock indicator */}
+      {isCapsLockOn && (
+        <div className={`absolute top-4 right-16 z-30 flex items-center gap-2 px-2 py-1 rounded text-xs ${
+          settings.isDarkMode 
+            ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-400/20' 
+            : 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+        }`}>
+          <Lock className="w-3 h-3" />
+          CAPS
+        </div>
+      )}
+
       <ControlPanel
         isVisible={showControlPanel}
         onClose={() => setShowControlPanel(false)}
@@ -404,45 +558,79 @@ export default function Index() {
         </div>
       )}
 
-      {/* Branding Footer */}
-      <div className="fixed bottom-4 right-4 z-30 text-right text-xs font-mono transition-all duration-200 ease-in-out opacity-30 hover:opacity-80 pointer-events-none select-none max-w-48">
-        <div className="text-[#4a5568] hover:text-[#64748b] transition-colors duration-200 break-words hyphens-auto">
-          <div className="whitespace-nowrap">type-B v1.0</div>
-          <div className="break-words">by Spencer Francisco × Von.dev</div>
-          <div className="break-words">Forged in dark mode 🌌 // 5.27.2025</div>
+      {/* Support Link - Bottom Left */}
+      <div className="fixed bottom-4 left-4 z-30 text-left text-xs font-mono transition-all duration-200 ease-in-out opacity-30 hover:opacity-80 pointer-events-auto select-none">
+        <div className="text-[#4a5568] hover:text-[#64748b] transition-colors duration-200">
+          <div className="whitespace-nowrap">
+            Support me on{' '}
+            <a 
+              href="https://ko-fi.com/spenceriam" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="underline hover:no-underline"
+            >
+              https://ko-fi.com/spenceriam
+            </a>
+          </div>
         </div>
       </div>
 
-      {/* Main scrollable container */}
+      {/* Branding Footer - Bottom Right */}
+      <div className="fixed bottom-4 right-4 z-30 text-right text-xs font-mono transition-all duration-200 ease-in-out opacity-30 hover:opacity-80 pointer-events-auto select-none">
+        <div className="text-[#4a5568] hover:text-[#64748b] transition-colors duration-200">
+          <div className="whitespace-nowrap">type-B v1.0</div>
+          <div className="whitespace-nowrap">
+            by Spencer Francisco ×{' '}
+            <a 
+              href="https://von.dev/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="underline hover:no-underline"
+            >
+              Von.dev
+            </a>
+          </div>
+          <div className="whitespace-nowrap">Forged in dark mode 🌌 // 5.27.2025</div>
+        </div>
+      </div>
+
+      {/* Main scrollable container - Centered with symmetric margins */}
       <div 
-        className={`h-full overflow-y-auto custom-scrollbar transition-all duration-200 ${
+        className={`h-full overflow-y-auto custom-scrollbar transition-all duration-200 flex justify-center ${
           isDragOver ? (settings.isDarkMode ? 'bg-editor-text/5 border-2 border-dashed border-editor-text/30' : 'bg-editor-text-light/5 border-2 border-dashed border-editor-text-light/30') : ''
         }`}
         style={{
-          paddingLeft: `${Math.max(32, settings.leftMargin)}px`,
-          paddingRight: `${Math.max(32, settings.rightMargin + 200)}px`, // Add extra padding for branding area
           paddingTop: '32px',
-          paddingBottom: '32px'
+          paddingBottom: '120px'
         }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* Main editor - Always present */}
-        <div className="relative w-full min-h-full">
+        {/* Centered content wrapper */}
+        <div 
+          className="w-full max-w-none relative min-h-full"
+          style={{
+            marginLeft: `${Math.max(32, settings.leftMargin)}px`,
+            marginRight: `${Math.max(32, settings.rightMargin)}px`,
+          }}
+        >
           <textarea
             ref={textareaRef}
             value={content}
             onChange={handleChange}
             onSelect={handleSelectionChange}
-            onKeyUp={handleSelectionChange}
+            onKeyUp={handleKeyUp}
             onKeyDown={handleKeyDown}
             onClick={handleSelectionChange}
-            className="w-full bg-transparent resize-none border-none outline-none editor-textarea leading-relaxed overflow-hidden"
+            onPaste={handlePaste}
+            onScroll={updateCursorPosition}
+            className="w-full bg-transparent resize-none border-none outline-none editor-textarea leading-relaxed"
             style={{ 
               fontSize: `${settings.fontSize}px`,
-              minHeight: 'calc(100vh - 64px)',
-              height: 'auto'
+              minHeight: 'calc(100vh - 152px)',
+              height: 'auto',
+              caretColor: 'transparent'
             }}
             placeholder=""
             spellCheck={false}
@@ -451,7 +639,7 @@ export default function Index() {
             autoCapitalize="off"
           />
           
-          {/* Welcome message overlay - positioned at cursor */}
+          {/* Welcome message overlay */}
           {showWelcome && content.length === 0 && (
             <div className="absolute top-0 left-0 flex items-center pointer-events-none">
               <span className="text-base">{welcomeText}</span>
@@ -461,48 +649,51 @@ export default function Index() {
             </div>
           )}
 
-          {/* Custom blinking cursor when typing */}
+          {/* Custom vintage terminal cursor */}
           {!showWelcome && (
             <div 
-              className="absolute pointer-events-none"
+              className="absolute pointer-events-none z-10"
               style={{
-                top: `${line * (settings.fontSize * 1.5)}px`,
-                left: `${column * (settings.fontSize * 0.6)}px`,
+                left: `${Math.max(0, cursorCoords.x)}px`,
+                top: `${Math.max(0, cursorCoords.y)}px`,
+                transform: 'translateY(2px)'
               }}
             >
-              <div className={`w-2 h-6 terminal-blink ${
+              <div className={`w-2 terminal-blink ${
                 settings.isDarkMode ? 'bg-editor-text' : 'bg-editor-text-light'
-              }`}></div>
+              }`} 
+              style={{ 
+                height: `${settings.fontSize * 1.2}px` 
+              }}></div>
             </div>
           )}
           
           {/* Inline word/character count */}
-          {settings.showCountDisplay && content.length > 0 && (
+          {settings.showCountDisplay && content.length > 0 && !showWelcome && (
             <div 
-              className="absolute ghost-count pointer-events-none"
+              className="absolute ghost-count pointer-events-none z-10"
               style={{
-                top: `${line * (settings.fontSize * 1.5)}px`,
-                left: `${column * (settings.fontSize * 0.6) + 8}px`,
+                left: `${Math.max(0, cursorCoords.x + 12)}px`,
+                top: `${Math.max(0, cursorCoords.y)}px`,
                 fontSize: `${Math.max(12, settings.fontSize - 2)}px`,
-                marginLeft: '8px'
               }}
             >
               {getCount()} {settings.showWordCount ? 'words' : 'chars'}
             </div>
           )}
-        </div>
 
-        {/* Drag overlay */}
-        {isDragOver && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-            <div className={`text-xl flex items-center gap-3 ${
-              settings.isDarkMode ? 'text-editor-text/60' : 'text-editor-text-light/60'
-            }`}>
-              <FileText className="w-8 h-8" />
-              Drop your file here
+          {/* Drag overlay */}
+          {isDragOver && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+              <div className={`text-xl flex items-center gap-3 ${
+                settings.isDarkMode ? 'text-editor-text/60' : 'text-editor-text-light/60'
+              }`}>
+                <FileText className="w-8 h-8" />
+                Drop your file here
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Hidden file input */}
@@ -514,7 +705,7 @@ export default function Index() {
         className="hidden"
       />
 
-      {/* Save As Dialog */}
+      {/* Save Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
         <DialogContent className={settings.isDarkMode ? 'bg-editor-bg border-editor-text/20' : 'bg-white border-gray-200'}>
           <DialogHeader>
